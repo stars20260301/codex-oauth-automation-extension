@@ -1009,6 +1009,35 @@ function isVerificationMailPollingError(error) {
   return /未在 .*邮箱中找到新的匹配邮件|邮箱轮询结束，但未获取到验证码|无法获取新的(?:注册|登录)验证码|页面未能重新就绪|页面通信异常|did not respond in \d+s/i.test(message);
 }
 
+const STEP7_RESTART_FROM_STEP6_ERROR_CODE = 'STEP7_RESTART_FROM_STEP6';
+
+function createStep7RestartFromStep6Error(details = {}) {
+  const { reason = 'unknown', url = '' } = details || {};
+  const reasonLabel = reason === 'login_timeout_error_page'
+    ? '检测到登录页超时报错'
+    : '步骤 7 请求回到步骤 6';
+  const error = new Error(`步骤 7：${reasonLabel}。${url ? `URL: ${url}` : ''}`.trim());
+  error.code = STEP7_RESTART_FROM_STEP6_ERROR_CODE;
+  error.restartReason = reason;
+  error.restartUrl = url;
+  return error;
+}
+
+function getStep7RestartFromStep6Error(result) {
+  if (!result?.restartFromStep6) {
+    return null;
+  }
+  return createStep7RestartFromStep6Error(result);
+}
+
+function isStep7RestartFromStep6Error(error) {
+  return error?.code === STEP7_RESTART_FROM_STEP6_ERROR_CODE;
+}
+
+function isStep7RecoverableError(error) {
+  return isVerificationMailPollingError(error) || isStep7RestartFromStep6Error(error);
+}
+
 function isRestartCurrentAttemptError(error) {
   const message = String(typeof error === 'string' ? error : error?.message || '');
   return /当前邮箱已存在，需要重新开始新一轮/.test(message);
@@ -2539,6 +2568,13 @@ async function requestVerificationCodeResend(step) {
     throw new Error(result.error);
   }
 
+  if (step === 7) {
+    const restartError = getStep7RestartFromStep6Error(result);
+    if (restartError) {
+      throw restartError;
+    }
+  }
+
   return Date.now();
 }
 
@@ -2625,6 +2661,13 @@ async function submitVerificationCode(step, code) {
     throw new Error(result.error);
   }
 
+  if (step === 7) {
+    const restartError = getStep7RestartFromStep6Error(result);
+    if (restartError) {
+      throw restartError;
+    }
+  }
+
   return result || {};
 }
 
@@ -2644,6 +2687,9 @@ async function resolveVerificationStep(step, state, mail, options = {}) {
       await requestVerificationCodeResend(step);
       await addLog(`步骤 ${step}：已先请求一封新的${getVerificationCodeLabel(step)}验证码，再开始轮询邮箱。`, 'warn');
     } catch (err) {
+      if (step === 7 && isStep7RestartFromStep6Error(err)) {
+        throw err;
+      }
       await addLog(`步骤 ${step}：首次重新获取验证码失败：${err.message}，将继续使用当前时间窗口轮询。`, 'warn');
     }
   }
@@ -2840,6 +2886,11 @@ async function runStep7Attempt(state) {
     throw new Error(prepareResult.error);
   }
 
+  const restartError = getStep7RestartFromStep6Error(prepareResult);
+  if (restartError) {
+    throw restartError;
+  }
+
   await addLog(`步骤 7：正在打开${mail.label}...`);
 
   const alive = await isTabAlive(mail.source);
@@ -2890,7 +2941,7 @@ async function executeStep7(state) {
     } catch (err) {
       lastError = err;
 
-      if (!isVerificationMailPollingError(err)) {
+      if (!isStep7RecoverableError(err)) {
         throw err;
       }
 
@@ -2898,9 +2949,18 @@ async function executeStep7(state) {
         break;
       }
 
-      await addLog(`步骤 7：检测到邮箱轮询类失败，准备从步骤 6 重新开始（${round + 1}/${STEP7_RESTART_MAX_ROUNDS}）...`, 'warn');
+      await addLog(
+        isStep7RestartFromStep6Error(err)
+          ? `步骤 7：检测到登录页超时报错，准备从步骤 6 重新开始（${round + 1}/${STEP7_RESTART_MAX_ROUNDS}）...`
+          : `步骤 7：检测到邮箱轮询类失败，准备从步骤 6 重新开始（${round + 1}/${STEP7_RESTART_MAX_ROUNDS}）...`,
+        'warn'
+      );
       await rerunStep6ForStep7Recovery();
     }
+  }
+
+  if (lastError && isStep7RecoverableError(lastError)) {
+    throw new Error(`步骤 7：登录验证码流程在 ${STEP7_RESTART_MAX_ROUNDS} 轮恢复后仍未成功。最后一次原因：${lastError.message}`);
   }
 
   throw lastError || new Error(`步骤 7：登录验证码流程在 ${STEP7_RESTART_MAX_ROUNDS} 轮后仍未成功。`);
