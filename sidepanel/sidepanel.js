@@ -315,9 +315,12 @@ function openActionModal({ title, message, actions, option, buildResult }) {
   autoStartMessage.textContent = message;
   currentModalActions = actions || [];
   modalResultBuilder = typeof buildResult === 'function' ? buildResult : null;
-  configureActionModalButton(btnAutoStartCancel, currentModalActions[0]);
-  configureActionModalButton(btnAutoStartRestart, currentModalActions[1]);
-  configureActionModalButton(btnAutoStartContinue, currentModalActions[2]);
+  const buttonSlots = currentModalActions.length <= 2
+    ? [btnAutoStartCancel, btnAutoStartContinue]
+    : [btnAutoStartCancel, btnAutoStartRestart, btnAutoStartContinue];
+  buttonSlots.forEach((button, index) => {
+    configureActionModalButton(button, currentModalActions[index]);
+  });
   configureActionModalOption(option);
   autoStartModal.hidden = false;
 
