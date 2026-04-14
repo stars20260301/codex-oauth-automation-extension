@@ -67,6 +67,7 @@ const bundle = [
   extractFunction('getAutoRunRoundRetryCount'),
   extractFunction('formatAutoRunFailureReasons'),
   extractFunction('logAutoRunFinalSummary'),
+  extractFunction('waitBetweenAutoRunRounds'),
   extractFunction('autoRunLoop'),
 ].join('\n');
 

@@ -55,6 +55,7 @@ const bundle = [
   extractFunction('normalizeEmailGenerator'),
   extractFunction('parseUrlSafely'),
   extractFunction('isHotmailProvider'),
+  extractFunction('isCustomMailProvider'),
   extractFunction('isGeneratedAliasProvider'),
   extractFunction('shouldUseCustomRegistrationEmail'),
   extractFunction('isLocalhostOAuthCallbackUrl'),
