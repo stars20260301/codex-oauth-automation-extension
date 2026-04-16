@@ -6,6 +6,7 @@
       addLog,
       generateRandomBirthday,
       generateRandomName,
+      getState,
       getTabId,
       handleChatgptOnboardingSkip,
       isRetryableContentScriptTransportError,
@@ -13,6 +14,14 @@
       sendToContentScript,
       waitForStep5ChatgptRedirect,
     } = deps;
+
+    async function isStepAlreadyCompleted(step) {
+      if (typeof getState !== 'function') {
+        return false;
+      }
+      const latestState = await getState().catch(() => null);
+      return latestState?.stepStatuses?.[step] === 'completed';
+    }
 
     async function executeStep5() {
       const { firstName, lastName } = generateRandomName();
@@ -37,6 +46,11 @@
         } else {
           throw err;
         }
+      }
+
+      if (step5TransportError && await isStepAlreadyCompleted(5)) {
+        await addLog('步骤 5：提交后的页面跳转打断了响应，但已收到完成信号，直接结束当前步骤。', 'info');
+        return;
       }
 
       if (step5Result?.chatgptOnboarding) {

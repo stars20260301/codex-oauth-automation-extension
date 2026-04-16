@@ -844,47 +844,6 @@ async function waitForChatgptPostSignupState(timeout = 15000) {
   return null;
 }
 
-async function waitForStep5SubmitOutcome(timeout = 15000) {
-  const start = Date.now();
-
-  while (Date.now() - start < timeout) {
-    throwIfStopped();
-
-    const errorText = getStep5ErrorText();
-    if (errorText) {
-      return { invalidProfile: true, errorText };
-    }
-
-    if (isAddPhonePageReady()) {
-      return { success: true, addPhonePage: true };
-    }
-
-    if (isChatgptOnboardingPage()) {
-      return { success: true, chatgptOnboarding: true };
-    }
-
-    if (isChatgptAuthenticatedHomePage()) {
-      return { success: true, chatgptHome: true };
-    }
-
-    if (isStep8Ready()) {
-      return { success: true };
-    }
-
-    await sleep(150);
-  }
-
-  const errorText = getStep5ErrorText();
-  if (errorText) {
-    return { invalidProfile: true, errorText };
-  }
-
-  return {
-    invalidProfile: true,
-    errorText: '提交后未进入下一阶段，请检查生日是否真正被页面接受。',
-  };
-}
-
 function isSignupPasswordPage() {
   return /\/create-account\/password(?:[/?#]|$)/i.test(location.pathname || '');
 }
@@ -2004,6 +1963,17 @@ function getSerializableRect(el) {
 // Step 5: Fill Name & Birthday / Age
 // ============================================================
 
+function getStep5DirectCompletionPayload({ isAgeMode = false } = {}) {
+  const payload = {
+    skippedPostSubmitCheck: true,
+    directProceedToStep6: true,
+  };
+  if (isAgeMode) {
+    payload.ageMode = true;
+  }
+  return payload;
+}
+
 async function step5_fillNameBirthday(payload) {
   const { firstName, lastName, age, year, month, day } = payload;
   if (!firstName || !lastName) throw new Error('未提供姓名数据。');
@@ -2220,46 +2190,22 @@ async function step5_fillNameBirthday(payload) {
 
   const isAgeMode = !birthdayMode && Boolean(ageInput);
   if (isAgeMode) {
-    log('步骤 5：当前为年龄输入模式，点击“继续”后将直接视为完成并进入步骤 6。', 'warn');
-    reportComplete(5, {
-      skippedPostSubmitCheck: true,
-      directProceedToStep6: true,
-    });
+    log('步骤 5：当前为年龄输入模式，点击“继续”后将直接完成当前步骤。', 'warn');
   }
 
   await humanPause(500, 1300);
   simulateClick(completeBtn);
 
+  const completionPayload = getStep5DirectCompletionPayload({ isAgeMode });
+  reportComplete(5, completionPayload);
+
   if (isAgeMode) {
-    log('步骤 5：年龄模式已点击“继续”，已跳过后续结果等待。', 'warn');
-    return;
+    log('步骤 5：年龄模式已点击“继续”，当前步骤直接完成，不再等待页面结果。', 'warn');
+    return completionPayload;
   }
 
-  log('步骤 5：已点击“完成帐户创建”，正在等待页面结果...');
-
-  const outcome = await waitForStep5SubmitOutcome();
-  if (outcome.invalidProfile) {
-    throw new Error(`步骤 5：${outcome.errorText}`);
-  }
-
-  if (outcome.chatgptOnboarding || outcome.chatgptHome) {
-    if (outcome.chatgptOnboarding) {
-      log('步骤 5：资料已通过，页面已跳转到 ChatGPT 引导页。', 'ok');
-    } else {
-      log('步骤 5：资料已通过，页面已进入已登录的 ChatGPT 页面。', 'ok');
-    }
-    reportComplete(5, {
-      chatgptOnboarding: Boolean(outcome.chatgptOnboarding),
-      chatgptHome: Boolean(outcome.chatgptHome),
-    });
-    return {
-      chatgptOnboarding: Boolean(outcome.chatgptOnboarding),
-      chatgptHome: Boolean(outcome.chatgptHome),
-    };
-  }
-
-  log(`步骤 5：资料已通过。`, 'ok');
-  reportComplete(5, { addPhonePage: Boolean(outcome.addPhonePage) });
+  log('步骤 5：已点击“完成帐户创建”，当前步骤直接完成，不再等待页面结果。');
+  return completionPayload;
 }
 
 // ============================================================

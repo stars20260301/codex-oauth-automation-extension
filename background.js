@@ -5269,6 +5269,7 @@ const step5Executor = self.MultiPageBackgroundStep5?.createStep5Executor({
   addLog,
   generateRandomBirthday,
   generateRandomName,
+  getState,
   getTabId,
   handleChatgptOnboardingSkip,
   isRetryableContentScriptTransportError,
