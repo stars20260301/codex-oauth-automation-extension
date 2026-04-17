@@ -151,6 +151,10 @@ const AUTO_RUN_RETRY_DELAY_MS = 3000;
 const AUTO_RUN_MAX_RETRIES_PER_ROUND = 3;
 const AUTO_STEP_DELAY_MIN_ALLOWED_SECONDS = 0;
 const AUTO_STEP_DELAY_MAX_ALLOWED_SECONDS = 600;
+const VERIFICATION_RESEND_COUNT_MIN = 0;
+const VERIFICATION_RESEND_COUNT_MAX = 20;
+const DEFAULT_SIGNUP_VERIFICATION_RESEND_COUNT = 5;
+const DEFAULT_LOGIN_VERIFICATION_RESEND_COUNT = 4;
 const LEGACY_AUTO_STEP_DELAY_KEYS = ['autoStepRandomDelayMinSeconds', 'autoStepRandomDelayMaxSeconds'];
 const DEFAULT_LOCAL_CPA_STEP9_MODE = 'submit';
 const DEFAULT_CPA_CALLBACK_MODE = 'step9';
@@ -218,6 +222,8 @@ const PERSISTED_SETTING_DEFAULTS = {
   autoRunDelayEnabled: false,
   autoRunDelayMinutes: 30,
   autoStepDelaySeconds: null,
+  signupVerificationResendCount: DEFAULT_SIGNUP_VERIFICATION_RESEND_COUNT,
+  loginVerificationResendCount: DEFAULT_LOGIN_VERIFICATION_RESEND_COUNT,
   mailProvider: '163',
   mail2925Mode: DEFAULT_MAIL_2925_MODE,
   emailGenerator: 'duck',
@@ -356,6 +362,23 @@ function normalizeAutoStepDelaySeconds(value, fallback = null) {
   return Math.min(
     AUTO_STEP_DELAY_MAX_ALLOWED_SECONDS,
     Math.max(AUTO_STEP_DELAY_MIN_ALLOWED_SECONDS, Math.floor(numeric))
+  );
+}
+
+function normalizeVerificationResendCount(value, fallback) {
+  const rawValue = String(value ?? '').trim();
+  if (!rawValue) {
+    return fallback;
+  }
+
+  const numeric = Number(rawValue);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+
+  return Math.min(
+    VERIFICATION_RESEND_COUNT_MAX,
+    Math.max(VERIFICATION_RESEND_COUNT_MIN, Math.floor(numeric))
   );
 }
 
@@ -781,6 +804,10 @@ function normalizePersistentSettingValue(key, value) {
       return normalizeAutoRunDelayMinutes(value);
     case 'autoStepDelaySeconds':
       return normalizeAutoStepDelaySeconds(value, PERSISTED_SETTING_DEFAULTS.autoStepDelaySeconds);
+    case 'signupVerificationResendCount':
+      return normalizeVerificationResendCount(value, DEFAULT_SIGNUP_VERIFICATION_RESEND_COUNT);
+    case 'loginVerificationResendCount':
+      return normalizeVerificationResendCount(value, DEFAULT_LOGIN_VERIFICATION_RESEND_COUNT);
     case 'mailProvider':
       return normalizeMailProvider(value);
     case 'mail2925Mode':
@@ -5286,23 +5313,28 @@ async function ensureAutoEmailReady(targetRun, totalRuns, attemptRuns) {
 async function runAutoSequenceFromStep(startStep, context = {}) {
   const { targetRun, totalRuns, attemptRuns, continued = false } = context;
   let postStep7RestartCount = 0;
+  let step4RestartCount = 0;
+  let currentStartStep = startStep;
+  let continueCurrentAttempt = continued;
 
-  if (continued) {
+  while (true) {
+
+  if (continueCurrentAttempt) {
     await addLog(`=== 目标 ${targetRun}/${totalRuns} 轮：继续当前进度，从步骤 ${startStep} 开始（第 ${attemptRuns} 次尝试）===`, 'info');
   } else {
     await addLog(`=== 目标 ${targetRun}/${totalRuns} 轮：第 ${attemptRuns} 次尝试，阶段 1，打开官网并进入密码页 ===`, 'info');
   }
 
-  if (startStep <= 1) {
+  if (currentStartStep <= 1) {
     await executeStepAndWait(1, AUTO_STEP_DELAYS[1]);
   }
 
-  if (startStep <= 2) {
+  if (currentStartStep <= 2) {
     await ensureAutoEmailReady(targetRun, totalRuns, attemptRuns);
     await executeStepAndWait(2, AUTO_STEP_DELAYS[2]);
   }
 
-  if (startStep <= 3) {
+  if (currentStartStep <= 3) {
     const latestState = await getState();
     const step3Status = latestState.stepStatuses?.[3] || 'pending';
     await addLog(`=== 目标 ${targetRun}/${totalRuns} 轮：阶段 2，填写密码、验证、登录并完成授权（第 ${attemptRuns} 次尝试）===`, 'info');
@@ -5325,7 +5357,8 @@ async function runAutoSequenceFromStep(startStep, context = {}) {
     await chrome.tabs.update(signupTabId, { active: true });
   }
 
-  let step = Math.max(startStep, 4);
+  let restartFromStep1WithCurrentEmail = false;
+  let step = Math.max(currentStartStep, 4);
   while (step <= LAST_STEP_ID) {
     try {
       await executeStepAndWait(step, AUTO_STEP_DELAYS[step]);
@@ -5338,6 +5371,31 @@ async function runAutoSequenceFromStep(startStep, context = {}) {
     } catch (err) {
       if (isStopError(err)) {
         throw err;
+      }
+
+      if (step === 4) {
+        step4RestartCount += 1;
+        const preservedState = await getState();
+        const preservedEmail = String(preservedState.email || '').trim();
+        const preservedPassword = String(preservedState.password || '').trim();
+        const emailSuffix = preservedEmail ? `当前邮箱：${preservedEmail}；` : '';
+        await addLog(
+          `步骤 4：执行失败，准备沿用当前邮箱回到步骤 1 重新开始（第 ${step4RestartCount} 次重开）。${emailSuffix}原因：${getErrorMessage(err)}`,
+          'warn'
+        );
+        await invalidateDownstreamAfterStepRestart(1, {
+          logLabel: `步骤 4 报错后准备回到步骤 1 沿用当前邮箱重试（第 ${step4RestartCount} 次重开）`,
+        });
+        const restorePayload = {};
+        if (preservedEmail) restorePayload.email = preservedEmail;
+        if (preservedPassword) restorePayload.password = preservedPassword;
+        if (Object.keys(restorePayload).length) {
+          await setState(restorePayload);
+        }
+        currentStartStep = 1;
+        continueCurrentAttempt = true;
+        restartFromStep1WithCurrentEmail = true;
+        break;
       }
 
       const restartDecision = await getPostStep6AutoRestartDecision(step, err);
@@ -5368,6 +5426,13 @@ async function runAutoSequenceFromStep(startStep, context = {}) {
       throw err;
     }
   }
+
+  if (restartFromStep1WithCurrentEmail) {
+    continue;
+  }
+
+  break;
+}
 }
 
 async function waitForResume() {
